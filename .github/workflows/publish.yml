@@ -1,0 +1,75 @@
+# owner: platform-be
+# slack: #platform-backend
+#
+# Publishes @phantom/openapi-wallet-service to public npm via OIDC trusted
+# publishing + provenance attestation. Triggered by tag.yml (workflow_dispatch
+# at refs/tags/v$VERSION); also accepts plain tag pushes as a maintainer
+# safety valve.
+#
+# Prereqs (Security-owned, one-time): mirror is PUBLIC (npm provenance refuses
+# private repos) and Trusted Publisher is registered at
+# npmjs.com/package/@phantom/openapi-wallet-service/access pinning repo,
+# workflow=publish.yml, environment=ci, ref=refs/tags/v*.
+#
+# The mirror commit already carries dist/ (security-actions yarn-pack lands
+# the canonical tarball at root). No install/build here.
+
+name: Publish to npm
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # Belt-and-suspenders: forks of a public mirror shouldn't run this.
+    if: github.repository == 'phantom/openapi-wallet-service'
+    runs-on: ubuntu-latest
+    environment: ci
+    permissions:
+      contents: read
+      id-token: write   # OIDC for trusted publishing + provenance
+    env:
+      NPM_CONFIG_PROVENANCE: "true"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.x
+          registry-url: "https://registry.npmjs.org"
+
+      # --provenance with OIDC trusted publishing needs npm 11.5.1+.
+      - run: npm install -g npm@^11.5.1
+
+      - name: Validate, guard, publish
+        run: |
+          set -euo pipefail
+          NAME=$(jq -er .name package.json)
+          VERSION=$(jq -er .version package.json)
+          EXPECTED="refs/tags/v${VERSION}"
+
+          if [ "$GITHUB_REF" != "$EXPECTED" ]; then
+            echo "::error::Ref/version mismatch: $GITHUB_REF vs $EXPECTED"
+            exit 1
+          fi
+
+          # Republish guard: re-dispatch after a transient failure is safe.
+          if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "${NAME}@${VERSION} already on npm; skip."
+            exit 0
+          fi
+
+          [ -d dist ] && [ -n "$(ls -A dist)" ] \
+            || { echo "::error::dist/ missing; re-run upstream sync"; exit 1; }
+
+          npm publish --provenance --access public

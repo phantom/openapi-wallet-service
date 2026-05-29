@@ -1,0 +1,74 @@
+# owner: platform-be
+# slack: #platform-backend
+#
+# On every sync from libs: read package.json.version, create refs/tags/vVERSION
+# (idempotent), then explicitly dispatch publish.yml at that tag ref.
+#
+# Why dispatch instead of letting `on: push: tags` fire? GitHub's recursive-
+# workflow guard drops tag pushes made with GITHUB_TOKEN; workflow_dispatch is
+# the exemption, and the dispatched run executes at refs/tags/vVERSION so the
+# OIDC ref claim still matches the npm Trusted Publisher pin.
+
+name: Tag release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: tag-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    # Belt-and-suspenders: forks of a public mirror shouldn't run this.
+    if: github.repository == 'phantom/openapi-wallet-service'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # POST /git/refs
+      actions: write    # dispatch publish.yml
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assert commit is reachable from origin/main
+        # Defense in depth: workflow_dispatch can target any --ref, so
+        # github.sha may not be on main. This guard prevents tagging a
+        # non-main commit if the workflow is dispatched against another ref.
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$SHA" origin/main \
+            || { echo "::error::$SHA not reachable from origin/main"; exit 1; }
+
+      - name: Tag and dispatch publish
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          TAG="v$(jq -er .version package.json)"
+
+          # POST /git/refs returns 422 when the ref exists — canonical
+          # idempotency signal, no pre-check needed.
+          if OUT=$(gh api --method POST "repos/${REPO}/git/refs" \
+                -f "ref=refs/tags/${TAG}" -f "sha=${SHA}" 2>&1); then
+            echo "${TAG} created."
+          elif printf '%s' "$OUT" | grep -q "Reference already exists"; then
+            echo "${TAG} already on origin; idempotent skip."
+          else
+            printf '%s\n' "$OUT" >&2
+            exit 1
+          fi
+
+          # Dispatch unconditionally — publish.yml's republish guard handles
+          # already-published versions, giving a clean retry path.
+          gh workflow run publish.yml --repo "$REPO" --ref "refs/tags/${TAG}"
