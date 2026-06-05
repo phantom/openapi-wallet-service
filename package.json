@@ -1,6 +1,6 @@
 {
   "name": "@phantom/openapi-wallet-service",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "TypeScript client for the Phantom Wallet Service API. Generated from the OpenAPI spec.",
   "author": "Phantom <support@phantom.app>",
   "license": "MIT",

@@ -1,5 +1,12 @@
 # @phantom/openapi-wallet-service
 
+## 0.1.15
+
+### Patch Changes
+
+- 0cdbbc5: - feat(openapi-wallet-service): publish via public mirror with OIDC trusted publishing
+  - ci(release): drop in-libs publish of @phantom/openapi-wallet-service
+
 ## 0.1.14
 
 ### Patch Changes
